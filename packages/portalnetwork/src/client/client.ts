@@ -15,42 +15,166 @@ import { LevelUp } from 'levelup'
 import { INodeAddress } from "@chainsafe/discv5/lib/session/nodeInfo";
 const level = require('level-mem')
 
-const _log = debug("portalnetwork")
+const _log = debug('portalnetwork')
 
-type state = {
-    [key: string]: Uint8Array
-}
+const MAX_PACKET_SIZE = 1280
 
-let testArray = new Uint8Array(2000)
-for (let i = 0; i < 2000; i++) {
-    testArray[i] = Math.floor(Math.random() * 255)
-    
-}
+export class PortalNetwork extends (EventEmitter as { new (): PortalNetworkEventEmitter }) {
+  client: Discv5
+  stateNetworkRoutingTable: StateNetworkRoutingTable
+  historyNetworkRoutingTable: PortalNetworkRoutingTable
+  uTP: UtpProtocol
+  nodeRadius: number
+  db: LevelUp
+  /**
+   *
+   * @param ip initial local IP address of node
+   * @param proxyAddress IP address of proxy
+   * @returns a new PortalNetwork instance
+   */
+  public static createPortalNetwork = async (ip: string, proxyAddress = '127.0.0.1') => {
+    const id = await PeerId.create({ keyType: 'secp256k1' })
+    const enr = ENR.createFromPeerId(id)
+    enr.setLocationMultiaddr(new Multiaddr(`/ip4/${ip}/udp/0`))
+    return new PortalNetwork(
+      {
+        enr,
+        peerId: id,
+        multiaddr: enr.getLocationMultiaddr('udp')!,
+        transport: 'wss',
+        proxyAddress: proxyAddress,
+      },
+      1
+    )
+  }
 
-export class PortalNetwork extends (EventEmitter as { new(): PortalNetworkEventEmitter }) {
-    client: Discv5;
-    stateNetworkRoutingTable: StateNetworkRoutingTable;
-    historyNetworkRoutingTable: PortalNetworkRoutingTable;
-    uTP: UtpProtocol;
-    nodeRadius: number;
-    db: LevelUp
-    /**
-     * 
-     * @param ip initial local IP address of node
-     * @param proxyAddress IP address of proxy
-     * @returns a new PortalNetwork instance
-     */
-    public static createPortalNetwork = async (ip: string, proxyAddress = '127.0.0.1') => {
-        const id = await PeerId.create({ keyType: "secp256k1" });
-        const enr = ENR.createFromPeerId(id);
-        enr.setLocationMultiaddr(new Multiaddr(`/ip4/${ip}/udp/0`));
-        return new PortalNetwork({
-            enr,
-            peerId: id,
-            multiaddr: enr.getLocationMultiaddr('udp')!,
-            transport: "wss",
-            proxyAddress: proxyAddress,
-        }, 1)
+  /**
+   *
+   * Portal Network constructor
+   * @param config a dictionary of `IDiscv5CreateOptions` for configuring the discv5 networking layer
+   * @param radius defines the radius of data the node is interesting in storing
+   * @param db a `level` compliant database provided by the module consumer - instantiates an in-memory DB if not provided
+   */
+  constructor(config: IDiscv5CreateOptions, radius = 1, db?: LevelUp) {
+    // eslint-disable-next-line constructor-super
+    super()
+    this.client = Discv5.create(config)
+    this.on('Stream', (id, content) => {
+      this.handleStreamedContent(id, content)
+    })
+    this.nodeRadius = radius
+    this.stateNetworkRoutingTable = new StateNetworkRoutingTable(this.client.enr.nodeId)
+    this.historyNetworkRoutingTable = new PortalNetworkRoutingTable(this.client.enr.nodeId)
+    this.client.on('talkReqReceived', this.onTalkReq)
+    this.client.on('talkRespReceived', this.onTalkResp)
+    this.client.on('sessionEnded', (srcId) => {
+      // Remove node from subnetwork routing tables when a session is ended by discv5
+      // (i.e. failed a liveness check)
+      this.updateSubnetworkRoutingTable(srcId, SubNetworkIds.StateNetwork)
+      this.updateSubnetworkRoutingTable(srcId, SubNetworkIds.HistoryNetwork)
+    })
+    this.uTP = new UtpProtocol(this)
+    this.db = db ?? level()
+    ;(this.client as any).sessionService.on('established', (enr: ENR) => {
+      const distances = this.historyNetworkRoutingTable.buckets
+        .map((bucket, index) => (bucket.isEmpty() ? index : undefined))
+        .filter((distance) => distance !== undefined)
+      if (distances.length > 0) {
+        // Populate subnetwork routing table for empty buckets in the routing table
+        this.sendFindNodes(
+          enr.nodeId,
+          Uint16Array.from(distances as any),
+          SubNetworkIds.HistoryNetwork
+        )
+      }
+    })
+  }
+
+  log = (msg: any) => {
+    _log(msg)
+    typeof msg === 'string'
+      ? this.emit('log', msg)
+      : this.emit(
+          'log',
+          `Payload: SSZ Union<${Object.entries(msg)
+            .map(([k, v]) => {
+              return `${k}: ${v}`
+            })
+            .toString()}>`
+        )
+  }
+
+  /**
+   * Starts the portal network client
+   */
+  public start = async () => {
+    // Hardcoded data for testing - block 1 from mainnet
+    const block1HeaderRlp =
+      '0xf90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec4'
+    const block1Hash = '0x88e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6'
+    this.addContentToHistory(1, HistoryNetworkContentTypes.BlockHeader, block1Hash, block1HeaderRlp)
+    await this.client.start()
+  }
+
+  /**
+   *
+   * @param namespaces comma separated list of logging namespaces
+   * defaults to "portalnetwork*, discv5:service, <uTP>*,<uTP>:Reader*"
+   */
+  public enableLog = (
+    namespaces: string = 'portalnetwork*,discv5:service*,<uTP>*,<uTP>:Reader*'
+  ) => {
+    debug.enable(namespaces)
+  }
+
+  /**
+   * @returns the node's current radius
+   */
+  public get radius() {
+    return this.nodeRadius
+  }
+
+  /**
+   * Updates the node's radius for interested content
+   * @param value number representing the new radius
+   * @throws if `value` is outside correct range
+   */
+  public set radius(value: number) {
+    if (value > 256 || value < 0) {
+      throw new Error('radius must be between 0 and 256')
+    }
+    this.nodeRadius = value
+  }
+
+  /**
+   * Sends a Portal Network Wire Protocol PING message to a specified node
+   * @param dstId the nodeId of the peer to send a ping to
+   * @param payload custom payload to be sent in PING message
+   * @param networkId subnetwork ID
+   * @returns the PING payload specified by the subnetwork or undefined
+   */
+  public sendPing = async (dstId: string, networkId: SubNetworkIds) => {
+    const payload = PingPongCustomDataType.serialize({ radius: BigInt(this.nodeRadius) })
+    const pingMsg = PortalWireMessageType.serialize({
+      selector: MessageCodes.PING,
+      value: {
+        enrSeq: this.client.enr.seq,
+        customPayload: payload,
+      },
+    })
+    try {
+      this.log(`Sending PING to ${shortId(dstId)} for ${SubNetworkIds.StateNetwork} subnetwork`)
+      const res = await this.sendPortalNetworkMessage(dstId, Buffer.from(pingMsg), networkId)
+      if (parseInt(res.slice(0, 1).toString('hex')) === MessageCodes.PONG) {
+        this.log(`Received PONG from ${shortId(dstId)}`)
+        const decoded = PortalWireMessageType.deserialize(res)
+        const pongMessage = decoded.value as PongMessage
+        this.updateSubnetworkRoutingTable(dstId, networkId, pongMessage.customPayload)
+        return decoded.value as PongMessage
+      }
+    } catch (err: any) {
+      this.log(`Error during PING request to ${shortId(dstId)}: ${err.toString()}`)
+      this.updateSubnetworkRoutingTable(dstId, networkId)
     }
 
     /**
@@ -300,12 +424,64 @@ export class PortalNetwork extends (EventEmitter as { new(): PortalNetworkEventE
             if (err) this.log(`Error putting content in history DB: ${err}`)
         })
     }
+  }
 
-    private sendPong = async (srcId: string, reqId: bigint) => {
-        const customPayload = PingPongCustomDataType.serialize({ radius: BigInt(this.nodeRadius) })
-        const payload = {
-            enrSeq: this.client.enr.seq,
-            customPayload: customPayload
+  private onTalkResp = (src: INodeAddress, sourceId: ENR | null, message: ITalkRespMessage) => {
+    const srcId = src.nodeId
+    this.log(`TALKRESPONSE message received from ${srcId}, ${message.toString()}`)
+  }
+
+  private handleStreamedContent(rcvId: number, content: Uint8Array) {
+    this.log(`received all content for ${rcvId}`)
+    const header = BlockHeader.fromRLPSerializedHeader(Buffer.from(content))
+    this.addContentToHistory(
+      1,
+      HistoryNetworkContentTypes.BlockHeader,
+      toHexString(header.hash()),
+      toHexString(content)
+    )
+  }
+
+  // TODO: Decide if we actually need this message since we should never get a CONTENT message in a TALKREQ message packet
+  private handleContent(srcId: string, message: ITalkReqMessage) {
+    const decoded = PortalWireMessageType.deserialize(message.request)
+    const payload = decoded.value as ContentMessage
+    const packet = payload.content as Uint8Array
+    this.handleUTP(srcId, message.id, Buffer.from(packet))
+  }
+
+  private handlePing = (srcId: string, message: ITalkReqMessage) => {
+    const decoded = PortalWireMessageType.deserialize(message.request)
+    const pingMessage = decoded.value as PingMessage
+    this.updateSubnetworkRoutingTable(
+      srcId,
+      toHexString(message.protocol) as SubNetworkIds,
+      pingMessage.customPayload
+    )
+    // Check to see if node is already in corresponding network routing table and add if not
+    this.sendPong(srcId, message.id)
+  }
+
+  private handleFindNodes = (srcId: string, message: ITalkReqMessage) => {
+    const decoded = PortalWireMessageType.deserialize(message.request)
+    this.log(`Received FINDNODES request from ${shortId(srcId)}`)
+    this.log(decoded)
+    const payload = decoded.value as FindNodesMessage
+    if (payload.distances.length > 0) {
+      const nodesPayload: NodesMessage = {
+        total: 0,
+        enrs: [],
+      }
+      payload.distances.forEach((distance) => {
+        if (distance > 0) {
+          // Any distance > 0 is technically distance + 1 in the routing table index since a node of distance 1
+          // would be in bucket 0
+          this.historyNetworkRoutingTable.valuesOfDistance(distance + 1).forEach((enr) => {
+            // Exclude ENR from resopnse if it matches the requesting node
+            if (enr.nodeId === srcId) return
+            nodesPayload.total++
+            nodesPayload.enrs.push(enr.encode())
+          })
         }
         const pongMsg = PortalWireMessageType.serialize({
             selector: MessageCodes.PONG,

@@ -10,12 +10,12 @@ import * as Convert from "./Convert";
 export function MicrosecondTimeStamp(): number {
   // this is only a millisecond timestamp
   // process.hrtime.bigint() doesn't seem to work in the browser?
-  let time = performance.now();
-  return time * 1000;
+  const time = Date.now()
+  return time * 1000
 }
 
 export function Bytes32TimeStamp(): number {
-  return Number(MicrosecondTimeStamp()) & 0xFFFF
+  return MicrosecondTimeStamp() & 0xffff
 }
 
 export function randUint16(): Uint16 {

@@ -1,14 +1,39 @@
-import {
-  protocolVersion,
-  PacketType,
-  IPacketOptions,
-} from "./PacketTyping";
-import { PacketHeader } from "./PacketHeader";
-import { SelectiveAckHeader, Uint16, Uint32 } from ".";
-import { debug } from "debug";
-import { EXTENSION } from "..";
+import { protocolVersion, PacketType, IPacketOptions } from './PacketTyping'
+import { PacketHeader } from './PacketHeader'
+import { SelectiveAckHeader, Uint16, Uint32 } from '.'
+import { debug } from 'debug'
+import { Bytes32TimeStamp } from '..'
 
-const log = debug("<uTP>");
+const log = debug('<uTP>')
+
+export function packetToBuffer(packet: Packet): Buffer {
+  const buffer = Buffer.alloc(packet.header.length)
+  const p = packet.header.pType.toString(16)
+  const v = packet.header.version.toString(16)
+  const pv = p + v
+  const typeAndVer = parseInt(pv, 16)
+
+  buffer.writeUInt8(typeAndVer, 0)
+  buffer.writeUInt8(packet.header.extension, 1)
+  buffer.writeUInt16BE(packet.header.connectionId, 2)
+  buffer.writeUInt32BE(packet.header.timestamp, 4)
+  buffer.writeUInt32BE(packet.header.timestampDiff, 8)
+  buffer.writeUInt32BE(packet.header.wndSize, 12)
+  buffer.writeUInt16BE(packet.header.seqNr, 16)
+  buffer.writeUInt16BE(packet.header.ackNr, 18)
+  if (packet.header.extension === 1) {
+    const p = packet.header as SelectiveAckHeader
+    buffer.writeUInt8(p.selectiveAckExtension.type, 20)
+    buffer.writeUInt8(p.selectiveAckExtension.len, 21)
+    p.selectiveAckExtension.bitmask.forEach((uint8, idx) => {
+      buffer.writeUInt8(uint8, 22 + idx)
+    })
+  }
+  if (packet.payload) {
+    return Buffer.concat([buffer, Buffer.from(packet.payload)])
+  }
+  return buffer
+}
 
 export class Packet {
   header: PacketHeader | SelectiveAckHeader;
@@ -29,8 +54,9 @@ export class Packet {
   }
 
   encodePacket(): Buffer {
-    let buffer = packetToBuffer(this);
-    return buffer;
+    // TODO - bring packetToBuffer code in here and remove separate helper function?
+    const buffer = packetToBuffer(this)
+    return buffer
   }
 }
 
@@ -140,7 +166,7 @@ export function createFinPacket(connectionId: Uint16, ackNr: number,   wndSize: 
     version: protocolVersion,
     extension: 0,
     connectionId: connectionId,
-    timestamp: Date.now(),
+    timestamp: Bytes32TimeStamp(),
     timestampDiff: 0,
     wndSize: wndSize,
     seqNr: Number("eof_pkt") & 0xFFFF,
