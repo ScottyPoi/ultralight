@@ -66,10 +66,12 @@ export const App = () => {
     init()
   }, [])
 
+
   const copy = async () => {
     await setENR(portal?.client.enr.encodeTxt(portal.client.keypair.privateKey) ?? '')
     onCopy()
   }
+
 
   const updateNetwork = (val: string) => {
     switch (val) {

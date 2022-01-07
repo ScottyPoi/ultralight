@@ -1,41 +1,41 @@
-import { Uint16, Uint32, Uint8 } from '..'
+import { Bytes32TimeStamp, Uint16, Uint32, Uint8 } from '..'
 import { VERSION, DEFAULT_WINDOW_SIZE } from '../Utils/constants'
 import { SelectiveAckHeaderExtension } from './Extentions'
 import { IPacketHeader, MicroSeconds, PacketType } from './PacketTyping'
 
 export class PacketHeader {
-  pType: PacketType
-  version: Uint8
-  extension: Uint8
-  connectionId: Uint16
-  timestamp: MicroSeconds
-  timestampDiff: MicroSeconds
-  wndSize: Uint32
-  seqNr: Uint16
-  ackNr: Uint16
-  length: number
+  pType: PacketType;
+  version: Uint8;
+  extension: Uint8;
+  connectionId: Uint16;
+  timestamp: MicroSeconds;
+  timestampDiff: MicroSeconds;
+  wndSize: Uint32;
+  seqNr: Uint16;
+  ackNr: Uint16;
+  length: number;
 
   constructor(options: IPacketHeader) {
-    this.pType = options.pType
-    this.version = options.version ?? VERSION
-    this.extension = options.extension ?? 0
+    this.pType = options.pType;
+    this.version = options.version || VERSION;
+    this.extension = options.extension || 0
     this.connectionId = options.connectionId
-    this.timestamp = options.timestamp ?? performance.now()
+    this.timestamp = options.timestamp ?? Bytes32TimeStamp()
     this.timestampDiff = options.timestampDiff ?? 0
     this.wndSize = options.wndSize ?? DEFAULT_WINDOW_SIZE
     this.seqNr = options.seqNr
-    this.ackNr = options.ackNr
+    this.ackNr = options.ackNr;
     this.length = 20
-  }
+  } 
   encodeTypeVer(): Uint8 {
-    let typeVer: Uint8 = 0
-    const typeOrd: Uint8 = this.pType
-    typeVer = (typeVer & 0xf0) | (this.version & 0xf)
-    typeVer = (typeVer & 0xf) | (typeOrd << 4)
-    return typeVer
+    let typeVer: Uint8 = 0;
+    let typeOrd: Uint8 = this.pType;
+    typeVer = (typeVer & 0xf0) | (this.version & 0xf);
+    typeVer = (typeVer & 0xf) | (typeOrd << 4);
+    return typeVer;
   }
   encodeHeaderStream(): Buffer {
-    const buffer = Buffer.alloc(20)
+    let buffer = Buffer.alloc(20)
     buffer[0] = 1
     buffer[1] = 0
     buffer.writeUInt16BE(this.connectionId, 2)
@@ -49,7 +49,7 @@ export class PacketHeader {
 }
 
 export class SelectiveAckHeader extends PacketHeader {
-  selectiveAckExtension: SelectiveAckHeaderExtension
+  selectiveAckExtension: SelectiveAckHeaderExtension;
   constructor(options: IPacketHeader, bitmask: Uint8Array) {
     super(options)
     this.extension = 1
@@ -58,7 +58,7 @@ export class SelectiveAckHeader extends PacketHeader {
   }
 
   encodeHeaderStream(): Buffer {
-    const buffer = Buffer.alloc(20 + this.selectiveAckExtension.len + 2)
+    let buffer = Buffer.alloc(20 + this.selectiveAckExtension.len + 2)
     buffer[0] = 1
     buffer[1] = 0
     buffer.writeUInt16BE(this.connectionId, 2)
@@ -74,4 +74,6 @@ export class SelectiveAckHeader extends PacketHeader {
     })
     return buffer
   }
+
+
 }

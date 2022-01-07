@@ -1,4 +1,4 @@
-import StrictEventEmitter from 'strict-event-emitter-types/types/src'
+import StrictEventEmitter from "strict-event-emitter-types/types/src";
 import EventEmitter from 'events'
 
 export interface IPortalNetworkEvents {
